@@ -105,24 +105,27 @@ function masquerEmail(email) {
 // Ce module prend en charge les API HTTPS (port 443) qui fonctionnent à 100%
 // sur Render (Resend, Brevo, Gmail API) ainsi que SMTP standard en local.
 
-function creerTransporteurSmtp() {
-  const missingSmtp = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'].filter(
-    (key) => !process.env[key]
-  );
-  if (missingSmtp.length) return null;
-  const pass = (process.env.SMTP_PASS || '').replace(/^"(.*)"$/, '$1');
+function creerTransporteurSmtp(customPort) {
+  const host = process.env.SMTP_HOST || 'smtp-relay.brevo.com';
+  const user = process.env.SMTP_USER || process.env.Connection;
+  const rawPass = process.env.SMTP_PASS || process.env.CLE_SMTP;
+  if (!host || !user || !rawPass) return null;
+
+  const pass = rawPass.replace(/^"(.*)"$/, '$1');
+  const port = customPort || Number(process.env.SMTP_PORT) || (host.includes('brevo.com') ? 2525 : 587);
+
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT) || 587,
+    host,
+    port,
     secure: process.env.SMTP_SECURE === 'true',
     auth: {
-      user: process.env.SMTP_USER,
-      pass: pass,
+      user,
+      pass,
     },
-    // Délais courts pour éviter de bloquer la requête pendant 2 minutes si le port est filtré par l'hébergeur
-    connectionTimeout: 6000,
-    greetingTimeout: 6000,
-    socketTimeout: 6000,
+    // Délais courts pour éviter de bloquer la requête
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 5000,
   });
 }
 
@@ -316,29 +319,39 @@ async function envoyerEmail({ destinataire, sujet, texte }) {
     }
   }
 
-  // 5. Tenter SMTP standard (nodemailer)
-  const transporter = creerTransporteurSmtp();
-  if (transporter) {
-    try {
-      const from = process.env.FROM_EMAIL || process.env.SMTP_USER;
-      await transporter.sendMail({
-        from,
-        to: destinataire,
-        subject: sujet,
-        text: texte,
-      });
-      return true;
-    } catch (err) {
-      console.error(`Échec envoi SMTP à ${masquerEmail(destinataire)}:`, err.message);
-      if (err.message && (err.message.includes('timeout') || err.code === 'ETIMEDOUT')) {
-        console.warn(
-          `\n[NOTE RENDER] Les instances gratuites de Render bloquent les ports SMTP sortants (587, 465, 25).\n` +
-          `Pour que l'e-mail arrive directement dans votre boîte Gmail depuis Render :\n` +
-          `  1. Créez un compte gratuit sur https://app.brevo.com avec votre adresse ${process.env.SMTP_USER || 'Gmail'}\n` +
-          `  2. Allez dans Menu > SMTP & API > Clés API > Générer une nouvelle clé API\n` +
-          `  3. Ajoutez dans Render (Dashboard > Environment) : BREVO_API_KEY=xkeysib-...\n` +
-          `Elle utilise HTTPS (port 443, jamais bloqué) et est 100% gratuite (300 mails/jour).\n`
-        );
+  // 5. Tenter SMTP standard (nodemailer avec support multi-ports Brevo 2525 / 587)
+  const user = process.env.SMTP_USER || process.env.Connection;
+  const pass = process.env.SMTP_PASS || process.env.CLE_SMTP;
+  if (user && pass) {
+    const host = process.env.SMTP_HOST || 'smtp-relay.brevo.com';
+    const portsToTry = [];
+    const configuredPort = Number(process.env.SMTP_PORT);
+    if (configuredPort) portsToTry.push(configuredPort);
+
+    // Pour Brevo, port 2525 est prioritaire sur Render car non bloqué
+    if (host.includes('brevo.com')) {
+      if (!portsToTry.includes(2525)) portsToTry.unshift(2525);
+      if (!portsToTry.includes(587)) portsToTry.push(587);
+    } else {
+      if (!portsToTry.includes(587)) portsToTry.push(587);
+      if (!portsToTry.includes(465)) portsToTry.push(465);
+    }
+
+    for (const port of portsToTry) {
+      const transporter = creerTransporteurSmtp(port);
+      if (!transporter) continue;
+      try {
+        const from = process.env.FROM_EMAIL || 'lalatinaheryzo@gmail.com';
+        await transporter.sendMail({
+          from: `"Réservation Madagascar" <${from}>`,
+          to: destinataire,
+          subject: sujet,
+          text: texte,
+        });
+        console.log(`[AUTH] E-mail envoyé avec succès via Brevo SMTP (${host}:${port}) à ${masquerEmail(destinataire)}.`);
+        return true;
+      } catch (err) {
+        console.warn(`[SMTP] Tentative échouée sur ${host}:${port} (${err.message})`);
       }
     }
   }
