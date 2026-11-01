@@ -243,6 +243,36 @@ async function envoyerViaGmailApi(destinataire, sujet, texte) {
 }
 
 /**
+ * Envoi via SendGrid HTTP API (HTTPS port 443)
+ */
+async function envoyerViaSendGrid(destinataire, sujet, texte) {
+  const apiKey = process.env.SENDGRID_API_KEY;
+  if (!apiKey) return false;
+
+  const senderEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'lalatinaheryzo@gmail.com';
+  const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: destinataire }] }],
+      from: { email: senderEmail, name: 'Réservation Madagascar' },
+      subject: sujet,
+      content: [{ type: 'text/plain', value: texte }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error('Erreur API SendGrid:', res.status, errText);
+    return false;
+  }
+  return true;
+}
+
+/**
  * Fonction centrale d'envoi d'e-mail avec fallback
  */
 async function envoyerEmail({ destinataire, sujet, texte }) {
@@ -266,7 +296,17 @@ async function envoyerEmail({ destinataire, sujet, texte }) {
     }
   }
 
-  // 3. Tenter Gmail API REST (HTTPS 443)
+  // 3. Tenter SendGrid (HTTPS 443)
+  if (process.env.SENDGRID_API_KEY) {
+    try {
+      const ok = await envoyerViaSendGrid(destinataire, sujet, texte);
+      if (ok) return true;
+    } catch (err) {
+      console.error('Échec SendGrid:', err.message);
+    }
+  }
+
+  // 4. Tenter Gmail API REST (HTTPS 443)
   if (process.env.GMAIL_OAUTH_REFRESH_TOKEN) {
     try {
       const ok = await envoyerViaGmailApi(destinataire, sujet, texte);
@@ -276,7 +316,7 @@ async function envoyerEmail({ destinataire, sujet, texte }) {
     }
   }
 
-  // 4. Tenter SMTP standard (nodemailer)
+  // 5. Tenter SMTP standard (nodemailer)
   const transporter = creerTransporteurSmtp();
   if (transporter) {
     try {
@@ -292,8 +332,12 @@ async function envoyerEmail({ destinataire, sujet, texte }) {
       console.error(`Échec envoi SMTP à ${masquerEmail(destinataire)}:`, err.message);
       if (err.message && (err.message.includes('timeout') || err.code === 'ETIMEDOUT')) {
         console.warn(
-          `\n[NOTE RENDER] Les instances gratuites de Render bloquent les ports SMTP (587, 465, 25).\n` +
-          `Pour que l'envoi d'e-mail se fasse automatiquement depuis Render, ajoutez RESEND_API_KEY ou BREVO_API_KEY dans les variables d'environnement de Render (elles utilisent HTTPS port 443).\n`
+          `\n[NOTE RENDER] Les instances gratuites de Render bloquent les ports SMTP sortants (587, 465, 25).\n` +
+          `Pour que l'e-mail arrive directement dans votre boîte Gmail depuis Render :\n` +
+          `  1. Créez un compte gratuit sur https://app.brevo.com avec votre adresse ${process.env.SMTP_USER || 'Gmail'}\n` +
+          `  2. Allez dans Menu > SMTP & API > Clés API > Générer une nouvelle clé API\n` +
+          `  3. Ajoutez dans Render (Dashboard > Environment) : BREVO_API_KEY=xkeysib-...\n` +
+          `Elle utilise HTTPS (port 443, jamais bloqué) et est 100% gratuite (300 mails/jour).\n`
         );
       }
     }
