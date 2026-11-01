@@ -144,7 +144,7 @@ async function envoyerViaResend(destinataire, sujet, texte) {
     body: JSON.stringify({
       from,
       to: [destinataire],
-      subject,
+      subject: sujet,
       text: texte,
     }),
   });
@@ -176,7 +176,7 @@ async function envoyerViaBrevo(destinataire, sujet, texte) {
     body: JSON.stringify({
       sender: { name: 'Réservation Madagascar', email: senderEmail },
       to: [{ email: destinataire }],
-      subject,
+      subject: sujet,
       textContent: texte,
     }),
   });
@@ -284,7 +284,7 @@ async function envoyerEmail({ destinataire, sujet, texte }) {
       await transporter.sendMail({
         from,
         to: destinataire,
-        subject,
+        subject: sujet,
         text: texte,
       });
       return true;
